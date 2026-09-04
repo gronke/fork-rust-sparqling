@@ -25,6 +25,9 @@ let rows = client
 ## Features
 
 - **SELECT** (`sparql_query`) and **ASK** (`sparql_ask`) queries.
+- **Full response** — `query_response()` keeps `head.vars` and the raw
+  bindings; `rows()` yields each row in projection order, and the response
+  serializes back to the wire shape.
 - **Typed rows** — `query_into::<T>()` deserializes each binding into your own
   struct, coercing `xsd:` datatypes to numbers/booleans.
 - **Typed accessors** on `SparqlValue` (`as_i64`, `as_bool`, `is_uri`, …;

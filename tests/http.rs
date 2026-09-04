@@ -44,6 +44,17 @@ async fn posts_the_query_with_the_protocol_headers() {
 }
 
 #[tokio::test]
+async fn returns_the_full_response() {
+    let server = MockServer::start(vec![Reply::json(200, ROWS)]);
+
+    let response = client(&server, 0).query_response(QUERY).await.unwrap();
+
+    assert_eq!(response.head.vars, ["item"]);
+    assert_eq!(response.rows().count(), 1);
+    assert_eq!(response.boolean, None);
+}
+
+#[tokio::test]
 async fn answers_ask_queries() {
     let server = MockServer::start(vec![Reply::json(200, r#"{"head":{},"boolean":true}"#)]);
 

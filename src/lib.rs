@@ -22,7 +22,7 @@
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use reqwest::{Client, StatusCode};
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -35,15 +35,16 @@ const DEFAULT_RETRY_BASE_DELAY: Duration = Duration::from_millis(500);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 /// A single value (RDF term) returned in a SPARQL result binding.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct SparqlValue {
     /// `"uri"`, `"literal"`, `"bnode"`, or `"typed-literal"`.
-    #[serde(rename = "type")]
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub value_type: Option<String>,
     pub value: String,
     /// Datatype IRI for typed literals, e.g. `http://www.w3.org/2001/XMLSchema#integer`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub datatype: Option<String>,
-    #[serde(rename = "xml:lang")]
+    #[serde(rename = "xml:lang", skip_serializing_if = "Option::is_none")]
     pub lang: Option<String>,
 }
 
@@ -158,16 +159,29 @@ fn value_to_json(value: &SparqlValue) -> serde_json::Value {
     }
 }
 
-/// Full SPARQL JSON results — handles SELECT (`results.bindings`) and ASK (`boolean`).
-#[derive(Debug, Default, Deserialize)]
-struct SparqlResponse {
+/// A full SPARQL JSON result: SELECT answers carry `results.bindings`, ASK
+/// answers `boolean`. Serializes back to the wire shape.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct SparqlResponse {
+    #[serde(default)]
+    pub head: SparqlHead,
     /// Present only for SELECT queries.
-    results: Option<SparqlResults>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub results: Option<SparqlResults>,
     /// Present only for ASK queries.
-    boolean: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub boolean: Option<bool>,
 }
 
 impl SparqlResponse {
+    /// Each row's values in `head.vars` order, `None` where a variable is unbound.
+    pub fn rows(&self) -> impl Iterator<Item = Vec<Option<&SparqlValue>>> + '_ {
+        self.results
+            .iter()
+            .flat_map(|results| results.bindings.iter())
+            .map(|binding| self.head.vars.iter().map(|var| binding.get(var)).collect())
+    }
+
     /// The SELECT rows; an answer without `results` has the wrong shape.
     fn bindings(self) -> Result<Vec<SparqlBinding>, Error> {
         self.results
@@ -176,10 +190,18 @@ impl SparqlResponse {
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
-struct SparqlResults {
+/// The projected variables of a SPARQL JSON result.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct SparqlHead {
     #[serde(default)]
-    bindings: Vec<SparqlBinding>,
+    pub vars: Vec<String>,
+}
+
+/// The rows of a SELECT answer.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct SparqlResults {
+    #[serde(default)]
+    pub bindings: Vec<SparqlBinding>,
 }
 
 /// Async client for a single SPARQL endpoint.
@@ -281,6 +303,12 @@ impl SparqlClient {
     /// Execute a SELECT-style SPARQL query and return the result bindings.
     pub async fn sparql_query(&self, query: &str) -> Result<Vec<SparqlBinding>, Error> {
         self.run(query).await?.bindings()
+    }
+
+    /// Execute a query and return the full response: the projected variables
+    /// and the rows of a SELECT, or the `boolean` of an ASK.
+    pub async fn query_response(&self, query: &str) -> Result<SparqlResponse, Error> {
+        self.run(query).await
     }
 
     /// Execute a SELECT-style query and deserialize each row into `T`.
@@ -773,6 +801,23 @@ mod tests {
         let select: SparqlResponse =
             serde_json::from_str(r#"{"head":{"vars":["s"]},"results":{"bindings":[]}}"#).unwrap();
         assert!(select.bindings().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_response_rows_follow_the_projection_and_round_trip() {
+        let json = r#"{"head":{"vars":["s","label"]},"results":{"bindings":[{"s":{"type":"uri","value":"http://example.com/a"},"label":{"type":"literal","value":"A","xml:lang":"en"}},{"s":{"type":"uri","value":"http://example.com/b"}}]}}"#;
+        let response: SparqlResponse = serde_json::from_str(json).unwrap();
+
+        assert_eq!(response.head.vars, ["s", "label"]);
+        let rows: Vec<_> = response.rows().collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][0].unwrap().value, "http://example.com/a");
+        assert_eq!(rows[0][1].unwrap().lang.as_deref(), Some("en"));
+        assert!(rows[1][1].is_none());
+
+        let again: SparqlResponse =
+            serde_json::from_str(&serde_json::to_string(&response).unwrap()).unwrap();
+        assert_eq!(again, response);
     }
 
     #[test]

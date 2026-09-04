@@ -282,8 +282,9 @@ impl SparqlClient {
         self.run(query).await?.boolean.ok_or(Error::UnexpectedShape)
     }
 
-    /// Send a query to the endpoint, retrying throttled / timed-out attempts
-    /// up to `max_retries` with backoff, then parse the SPARQL JSON response.
+    /// Send a query to the endpoint, retrying throttled, timed-out and
+    /// undecodable attempts up to `max_retries` with backoff, then return the
+    /// parsed SPARQL JSON response.
     async fn run(&self, query: &str) -> Result<SparqlResponse, Error> {
         let mut attempt = 0;
         loop {
@@ -347,9 +348,13 @@ impl SparqlClient {
             };
         }
 
+        // A body cut short under load decodes as an error on a 200; retry it.
         match response.json::<SparqlResponse>().await {
             Ok(response) => Attempt::Done(response),
-            Err(e) => Attempt::Failed(Error::Decode(e)),
+            Err(e) => Attempt::Retry {
+                error: Error::Decode(e),
+                after: None,
+            },
         }
     }
 
@@ -437,8 +442,8 @@ impl SparqlClientBuilder {
         self
     }
 
-    /// Retry throttled (HTTP 429 / 503) and timed-out requests up to `max`
-    /// times before giving up. Default `0` (no retries).
+    /// Retry throttled (HTTP 429 / 503), timed-out and undecodable-body
+    /// requests up to `max` times before giving up. Default `0` (no retries).
     ///
     /// Retries honor a `Retry-After` response header when present, and
     /// otherwise back off exponentially from
@@ -519,7 +524,8 @@ pub enum Error {
     /// snippet of the response — endpoints report query timeouts and syntax
     /// errors there.
     Status { status: StatusCode, body: String },
-    /// The response could not be decoded as SPARQL JSON.
+    /// The response could not be decoded as SPARQL JSON (also a body cut
+    /// short by the endpoint; retried like a timeout).
     Decode(reqwest::Error),
     /// A result row could not be deserialized into the requested type (see
     /// [`SparqlClient::query_into`]).

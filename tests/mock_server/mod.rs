@@ -15,6 +15,8 @@ pub struct Reply {
     pub body: Vec<u8>,
     /// Wait before answering.
     pub delay: Duration,
+    /// Announce the full body but send only this many bytes.
+    pub truncate_at: Option<usize>,
 }
 
 impl Reply {
@@ -32,6 +34,7 @@ impl Reply {
             headers: vec![("Content-Type".to_string(), content_type.to_string())],
             body: body.as_bytes().to_vec(),
             delay: Duration::ZERO,
+            truncate_at: None,
         }
     }
 
@@ -42,6 +45,11 @@ impl Reply {
 
     pub fn delayed(mut self, delay: Duration) -> Self {
         self.delay = delay;
+        self
+    }
+
+    pub fn truncated_at(mut self, bytes: usize) -> Self {
+        self.truncate_at = Some(bytes);
         self
     }
 }
@@ -148,8 +156,11 @@ fn serve(mut stream: TcpStream, reply: Reply, recorded: &Mutex<Vec<Request>>) {
         "Content-Length: {}\r\nConnection: close\r\n\r\n",
         reply.body.len()
     ));
+    let sent = reply
+        .truncate_at
+        .map_or(reply.body.len(), |n| n.min(reply.body.len()));
     let _ = stream.write_all(head.as_bytes());
-    let _ = stream.write_all(&reply.body);
+    let _ = stream.write_all(&reply.body[..sent]);
     let _ = stream.flush();
 }
 

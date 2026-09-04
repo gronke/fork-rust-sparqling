@@ -145,4 +145,31 @@ async fn reports_an_undecodable_body() {
     let error = client(&server, 0).sparql_query(QUERY).await.unwrap_err();
 
     assert!(matches!(error, Error::Decode(_)));
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn retries_a_truncated_body() {
+    let server = MockServer::start(vec![
+        Reply::json(200, ROWS).truncated_at(20),
+        Reply::json(200, ROWS),
+    ]);
+
+    let rows = client(&server, 1).sparql_query(QUERY).await.unwrap();
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(server.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn gives_up_on_a_persistently_undecodable_body() {
+    let server = MockServer::start(vec![
+        Reply::json(200, "not json"),
+        Reply::json(200, "still not json"),
+    ]);
+
+    let error = client(&server, 1).sparql_query(QUERY).await.unwrap_err();
+
+    assert!(matches!(error, Error::Decode(_)));
+    assert_eq!(server.requests().len(), 2);
 }

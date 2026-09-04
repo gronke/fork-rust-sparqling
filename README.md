@@ -46,8 +46,12 @@ let rows = client
 - `escape_literal` for safely embedding strings in SPARQL literals.
 
 Queries are sent in the request body, so long queries don't hit URL-length
-limits. Many public endpoints (Wikidata especially) require a meaningful user
-agent — set one with the builder or `with_user_agent`.
+limits. Public endpoints expect a user agent that names your application and a
+way to reach you (Wikidata follows [Wikimedia's User-Agent policy]); the default
+`sparql-client/0.1 (Rust)` is a placeholder, so set your own with the builder or
+`with_user_agent`.
+
+[Wikimedia's User-Agent policy]: https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy
 
 ## License
 

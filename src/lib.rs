@@ -27,6 +27,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+/// A placeholder: public endpoints expect an agent naming the application
+/// and a contact address.
 const DEFAULT_USER_AGENT: &str = "sparql-client/0.1 (Rust)";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 /// Default base delay for exponential backoff between retries.
@@ -527,8 +529,13 @@ impl SparqlClientBuilder {
         }
     }
 
-    /// Set the `User-Agent` header. Ignored when [`http_client`](Self::http_client)
-    /// supplies a pre-built client.
+    /// Set the `User-Agent` header. Public endpoints expect it to name the
+    /// application and a contact address, e.g. `my-app/1.0 (you@example.com)`
+    /// (Wikidata follows [Wikimedia's User-Agent policy]); the default is a
+    /// placeholder. Ignored when [`http_client`](Self::http_client) supplies a
+    /// pre-built client.
+    ///
+    /// [Wikimedia's User-Agent policy]: https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy
     pub fn user_agent(mut self, user_agent: impl Into<String>) -> Self {
         self.user_agent = user_agent.into();
         self
@@ -552,9 +559,9 @@ impl SparqlClientBuilder {
     /// Retry throttled (HTTP 429 / 503), timed-out and undecodable-body
     /// requests up to `max` times before giving up. Default `0` (no retries).
     ///
-    /// Retries honor a `Retry-After` response header when present, and
-    /// otherwise back off exponentially from
-    /// [`retry_base_delay`](Self::retry_base_delay).
+    /// Retries honor a `Retry-After` response header given in seconds (the
+    /// HTTP-date form falls back to the backoff), and otherwise back off
+    /// exponentially from [`retry_base_delay`](Self::retry_base_delay).
     pub fn max_retries(mut self, max: u32) -> Self {
         self.max_retries = max;
         self

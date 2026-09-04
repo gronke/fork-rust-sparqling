@@ -24,7 +24,8 @@ use reqwest::{Client, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 const DEFAULT_USER_AGENT: &str = "sparql-client/0.1 (Rust)";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -189,6 +190,39 @@ pub struct SparqlClient {
     max_retries: u32,
     /// Base delay for exponential backoff between retries.
     retry_base_delay: Duration,
+    /// Spacing between consecutive requests, when configured.
+    pacing: Option<Pacing>,
+}
+
+/// Each request reserves the next free slot, so concurrent callers queue
+/// instead of bursting.
+struct Pacing {
+    interval: Duration,
+    next_slot: Mutex<Option<Instant>>,
+}
+
+impl Pacing {
+    fn new(interval: Duration) -> Self {
+        Self {
+            interval,
+            next_slot: Mutex::new(None),
+        }
+    }
+
+    /// Reserve the next slot and return how long to wait for it.
+    fn reserve(&self) -> Duration {
+        let now = Instant::now();
+        let mut next = self
+            .next_slot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let slot = match *next {
+            Some(slot) if slot > now => slot,
+            _ => now,
+        };
+        *next = Some(slot + self.interval);
+        slot - now
+    }
 }
 
 impl SparqlClient {
@@ -288,6 +322,12 @@ impl SparqlClient {
     async fn run(&self, query: &str) -> Result<SparqlResponse, Error> {
         let mut attempt = 0;
         loop {
+            if let Some(pacing) = &self.pacing {
+                let wait = pacing.reserve();
+                if !wait.is_zero() {
+                    tokio::time::sleep(wait).await;
+                }
+            }
             match self.attempt(query).await {
                 Attempt::Done(response) => return Ok(response),
                 Attempt::Failed(error) => return Err(error),
@@ -404,6 +444,7 @@ pub struct SparqlClientBuilder {
     timeout: Duration,
     max_retries: u32,
     retry_base_delay: Duration,
+    min_interval: Option<Duration>,
     /// A caller-supplied client to reuse instead of building a fresh one.
     client: Option<Client>,
 }
@@ -416,6 +457,7 @@ impl SparqlClientBuilder {
             timeout: DEFAULT_TIMEOUT,
             max_retries: 0,
             retry_base_delay: DEFAULT_RETRY_BASE_DELAY,
+            min_interval: None,
             client: None,
         }
     }
@@ -460,6 +502,13 @@ impl SparqlClientBuilder {
         self
     }
 
+    /// Keep consecutive requests at least `interval` apart, retries included;
+    /// concurrent callers queue for the next slot. Default: no spacing.
+    pub fn min_interval(mut self, interval: Duration) -> Self {
+        self.min_interval = Some(interval);
+        self
+    }
+
     /// Build the [`SparqlClient`], surfacing any HTTP-client build error.
     pub fn build(self) -> Result<SparqlClient, reqwest::Error> {
         let client = match self.client {
@@ -474,6 +523,7 @@ impl SparqlClientBuilder {
             endpoint: self.endpoint,
             max_retries: self.max_retries,
             retry_base_delay: self.retry_base_delay,
+            pacing: self.min_interval.map(Pacing::new),
         })
     }
 }
@@ -714,6 +764,16 @@ mod tests {
         assert_eq!(client.backoff(2), Duration::from_secs(4));
         // Capped at MAX_BACKOFF rather than growing without bound.
         assert_eq!(client.backoff(20), MAX_BACKOFF);
+    }
+
+    #[test]
+    fn test_pacing_reserves_consecutive_slots() {
+        let pacing = Pacing::new(Duration::from_millis(50));
+        assert!(pacing.reserve().is_zero());
+        let second = pacing.reserve();
+        assert!(second > Duration::from_millis(25) && second <= Duration::from_millis(50));
+        let third = pacing.reserve();
+        assert!(third > second);
     }
 
     #[test]

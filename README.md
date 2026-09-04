@@ -33,6 +33,8 @@ let rows = client
   or a shared `reqwest::Client`.
 - **Retries** with exponential backoff that honor `Retry-After`
   (`.max_retries(n)`).
+- **Pacing** — `.min_interval(d)` keeps consecutive requests at least `d`
+  apart.
 - `escape_literal` for safely embedding strings in SPARQL literals.
 
 Queries are sent in the request body, so long queries don't hit URL-length

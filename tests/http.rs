@@ -139,6 +139,22 @@ async fn does_not_retry_a_timeout_without_retries() {
 }
 
 #[tokio::test]
+async fn spaces_requests_by_the_minimum_interval() {
+    let server = MockServer::start(vec![Reply::json(200, ROWS), Reply::json(200, ROWS)]);
+    let client = SparqlClient::builder(server.url())
+        .min_interval(Duration::from_millis(80))
+        .build()
+        .unwrap();
+
+    let started = std::time::Instant::now();
+    client.sparql_query(QUERY).await.unwrap();
+    client.sparql_query(QUERY).await.unwrap();
+
+    assert!(started.elapsed() >= Duration::from_millis(80));
+    assert_eq!(server.requests().len(), 2);
+}
+
+#[tokio::test]
 async fn reports_an_undecodable_body() {
     let server = MockServer::start(vec![Reply::json(200, "not json")]);
 

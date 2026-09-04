@@ -33,3 +33,24 @@ jobs:
 
       - name: Test (all features)
         run: cargo test --all-features
+
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Resolve dependencies compatible with rust-version, not the newest.
+      CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.75"
+      - uses: Swatinem/rust-cache@v2
+      - name: Resolve at the MSRV
+        run: cargo +stable generate-lockfile
+      - name: Check at the MSRV
+        run: cargo +1.75 check --all-targets --all-features --locked
+      - name: Test at the MSRV
+        run: cargo +1.75 test --all-features --locked

@@ -11,6 +11,9 @@ a local [Oxigraph](https://github.com/oxigraph/oxigraph), or any other endpoint.
 sparqling = "0.1"
 ```
 
+Requires Rust 1.75 or later; toolchains older than the newest dependencies
+resolve with `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`.
+
 The crate is published as `sparqling`; the import path is `sparql_client`:
 
 ```rust

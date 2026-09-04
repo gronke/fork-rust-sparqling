@@ -35,6 +35,8 @@ let rows = client
   (`.max_retries(n)`).
 - **Pacing** — `.min_interval(d)` keeps consecutive requests at least `d`
   apart.
+- **Body cap** — `.max_body_bytes(n)` fails on an oversized response instead
+  of buffering it.
 - `escape_literal` for safely embedding strings in SPARQL literals.
 
 Queries are sent in the request body, so long queries don't hit URL-length

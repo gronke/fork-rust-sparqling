@@ -192,6 +192,8 @@ pub struct SparqlClient {
     retry_base_delay: Duration,
     /// Spacing between consecutive requests, when configured.
     pacing: Option<Pacing>,
+    /// Largest response body accepted, when configured.
+    max_body_bytes: Option<usize>,
 }
 
 /// Each request reserves the next free slot, so concurrent callers queue
@@ -388,8 +390,34 @@ impl SparqlClient {
             };
         }
 
-        // A body cut short under load decodes as an error on a 200; retry it.
-        match response.json::<SparqlResponse>().await {
+        let mut response = response;
+        if let (Some(limit), Some(length)) = (self.max_body_bytes, response.content_length()) {
+            if length > limit as u64 {
+                return Attempt::Failed(Error::TooLarge { limit });
+            }
+        }
+        let mut body = Vec::new();
+        loop {
+            match response.chunk().await {
+                Ok(Some(chunk)) => {
+                    if let Some(limit) = self.max_body_bytes {
+                        if body.len() + chunk.len() > limit {
+                            return Attempt::Failed(Error::TooLarge { limit });
+                        }
+                    }
+                    body.extend_from_slice(&chunk);
+                }
+                Ok(None) => break,
+                // A body cut short under load; retry it like a timeout.
+                Err(e) => {
+                    return Attempt::Retry {
+                        error: Error::Transport(e),
+                        after: None,
+                    }
+                }
+            }
+        }
+        match serde_json::from_slice::<SparqlResponse>(&body) {
             Ok(response) => Attempt::Done(response),
             Err(e) => Attempt::Retry {
                 error: Error::Decode(e),
@@ -445,6 +473,7 @@ pub struct SparqlClientBuilder {
     max_retries: u32,
     retry_base_delay: Duration,
     min_interval: Option<Duration>,
+    max_body_bytes: Option<usize>,
     /// A caller-supplied client to reuse instead of building a fresh one.
     client: Option<Client>,
 }
@@ -458,6 +487,7 @@ impl SparqlClientBuilder {
             max_retries: 0,
             retry_base_delay: DEFAULT_RETRY_BASE_DELAY,
             min_interval: None,
+            max_body_bytes: None,
             client: None,
         }
     }
@@ -509,6 +539,13 @@ impl SparqlClientBuilder {
         self
     }
 
+    /// Fail with [`Error::TooLarge`] once a response body exceeds `limit`
+    /// bytes, before buffering the rest. Default: no cap.
+    pub fn max_body_bytes(mut self, limit: usize) -> Self {
+        self.max_body_bytes = Some(limit);
+        self
+    }
+
     /// Build the [`SparqlClient`], surfacing any HTTP-client build error.
     pub fn build(self) -> Result<SparqlClient, reqwest::Error> {
         let client = match self.client {
@@ -524,6 +561,7 @@ impl SparqlClientBuilder {
             max_retries: self.max_retries,
             retry_base_delay: self.retry_base_delay,
             pacing: self.min_interval.map(Pacing::new),
+            max_body_bytes: self.max_body_bytes,
         })
     }
 }
@@ -568,15 +606,18 @@ fn truncate(s: &str, max: usize) -> String {
 /// Errors that can occur when querying a SPARQL endpoint.
 #[derive(Debug)]
 pub enum Error {
-    /// The request never completed (DNS, TLS, connect, or timeout).
+    /// The request never completed (DNS, TLS, connect, timeout, or a body
+    /// cut short).
     Transport(reqwest::Error),
     /// The endpoint returned a non-success status. `body` is a truncated
     /// snippet of the response — endpoints report query timeouts and syntax
     /// errors there.
     Status { status: StatusCode, body: String },
-    /// The response could not be decoded as SPARQL JSON (also a body cut
-    /// short by the endpoint; retried like a timeout).
-    Decode(reqwest::Error),
+    /// The response body could not be decoded as SPARQL JSON; retried like a
+    /// timeout.
+    Decode(serde_json::Error),
+    /// The response body exceeds the configured cap; not retried.
+    TooLarge { limit: usize },
     /// A result row could not be deserialized into the requested type (see
     /// [`SparqlClient::query_into`]).
     Deserialize(serde_json::Error),
@@ -605,6 +646,7 @@ impl std::fmt::Display for Error {
             Error::Transport(e) => write!(f, "SPARQL request error: {e}"),
             Error::Status { status, body } => write!(f, "SPARQL HTTP error: {status}: {body}"),
             Error::Decode(e) => write!(f, "SPARQL response decode error: {e}"),
+            Error::TooLarge { limit } => write!(f, "SPARQL response exceeds {limit} bytes"),
             Error::Deserialize(e) => write!(f, "SPARQL row deserialize error: {e}"),
             Error::UnexpectedShape => write!(f, "SPARQL response had an unexpected shape"),
         }
@@ -614,9 +656,9 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Error::Transport(e) | Error::Decode(e) => Some(e),
-            Error::Deserialize(e) => Some(e),
-            Error::Status { .. } | Error::UnexpectedShape => None,
+            Error::Transport(e) => Some(e),
+            Error::Decode(e) | Error::Deserialize(e) => Some(e),
+            Error::Status { .. } | Error::UnexpectedShape | Error::TooLarge { .. } => None,
         }
     }
 }

@@ -17,6 +17,8 @@ pub struct Reply {
     pub delay: Duration,
     /// Announce the full body but send only this many bytes.
     pub truncate_at: Option<usize>,
+    /// Send the body chunked, without a Content-Length.
+    pub chunked: bool,
 }
 
 impl Reply {
@@ -35,6 +37,7 @@ impl Reply {
             body: body.as_bytes().to_vec(),
             delay: Duration::ZERO,
             truncate_at: None,
+            chunked: false,
         }
     }
 
@@ -50,6 +53,11 @@ impl Reply {
 
     pub fn truncated_at(mut self, bytes: usize) -> Self {
         self.truncate_at = Some(bytes);
+        self
+    }
+
+    pub fn chunked(mut self) -> Self {
+        self.chunked = true;
         self
     }
 }
@@ -152,15 +160,26 @@ fn serve(mut stream: TcpStream, reply: Reply, recorded: &Mutex<Vec<Request>>) {
     for (name, value) in &reply.headers {
         head.push_str(&format!("{name}: {value}\r\n"));
     }
-    head.push_str(&format!(
-        "Content-Length: {}\r\nConnection: close\r\n\r\n",
-        reply.body.len()
-    ));
     let sent = reply
         .truncate_at
         .map_or(reply.body.len(), |n| n.min(reply.body.len()));
-    let _ = stream.write_all(head.as_bytes());
-    let _ = stream.write_all(&reply.body[..sent]);
+    if reply.chunked {
+        head.push_str("Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
+        let _ = stream.write_all(head.as_bytes());
+        for chunk in reply.body[..sent].chunks(8) {
+            let _ = stream.write_all(format!("{:x}\r\n", chunk.len()).as_bytes());
+            let _ = stream.write_all(chunk);
+            let _ = stream.write_all(b"\r\n");
+        }
+        let _ = stream.write_all(b"0\r\n\r\n");
+    } else {
+        head.push_str(&format!(
+            "Content-Length: {}\r\nConnection: close\r\n\r\n",
+            reply.body.len()
+        ));
+        let _ = stream.write_all(head.as_bytes());
+        let _ = stream.write_all(&reply.body[..sent]);
+    }
     let _ = stream.flush();
 }
 

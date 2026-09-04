@@ -154,6 +154,48 @@ async fn spaces_requests_by_the_minimum_interval() {
     assert_eq!(server.requests().len(), 2);
 }
 
+fn capped(server: &MockServer, limit: usize) -> SparqlClient {
+    SparqlClient::builder(server.url())
+        .max_body_bytes(limit)
+        .max_retries(1)
+        .retry_base_delay(Duration::from_millis(1))
+        .build()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn rejects_an_announced_body_over_the_cap() {
+    let server = MockServer::start(vec![Reply::json(200, ROWS), Reply::json(200, ROWS)]);
+
+    let error = capped(&server, 16).sparql_query(QUERY).await.unwrap_err();
+
+    assert!(matches!(error, Error::TooLarge { limit: 16 }));
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn rejects_a_chunked_body_over_the_cap() {
+    let server = MockServer::start(vec![Reply::json(200, ROWS).chunked()]);
+
+    let error = capped(&server, 16).sparql_query(QUERY).await.unwrap_err();
+
+    assert!(matches!(error, Error::TooLarge { limit: 16 }));
+}
+
+#[tokio::test]
+async fn accepts_a_body_within_the_cap() {
+    let server = MockServer::start(vec![Reply::json(200, ROWS).chunked()]);
+
+    assert_eq!(
+        capped(&server, 4096)
+            .sparql_query(QUERY)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
 #[tokio::test]
 async fn reports_an_undecodable_body() {
     let server = MockServer::start(vec![Reply::json(200, "not json")]);

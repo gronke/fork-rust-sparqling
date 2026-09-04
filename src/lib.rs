@@ -251,10 +251,17 @@ impl Pacing {
 
 impl SparqlClient {
     /// Create a client for `endpoint` with a default user agent.
+    ///
+    /// Panics if the HTTP client cannot be built; [`try_new`](Self::try_new)
+    /// surfaces that error instead.
     pub fn new(endpoint: impl Into<String>) -> Self {
-        Self::builder(endpoint)
-            .build()
-            .expect("default client builds")
+        Self::try_new(endpoint).expect("default client builds")
+    }
+
+    /// Create a client for `endpoint` with a default user agent, surfacing
+    /// HTTP-client build errors.
+    pub fn try_new(endpoint: impl Into<String>) -> Result<Self, reqwest::Error> {
+        Self::builder(endpoint).build()
     }
 
     /// Create a client for `endpoint` with a custom user agent.
@@ -818,6 +825,12 @@ mod tests {
         let again: SparqlResponse =
             serde_json::from_str(&serde_json::to_string(&response).unwrap()).unwrap();
         assert_eq!(again, response);
+    }
+
+    #[test]
+    fn test_try_new_builds_a_default_client() {
+        let client = SparqlClient::try_new("https://example.com/sparql").unwrap();
+        assert_eq!(client.endpoint(), "https://example.com/sparql");
     }
 
     #[test]

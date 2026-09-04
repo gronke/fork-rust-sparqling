@@ -54,6 +54,15 @@ async fn answers_ask_queries() {
 }
 
 #[tokio::test]
+async fn rejects_a_select_answer_without_results() {
+    let server = MockServer::start(vec![Reply::json(200, r#"{"head":{},"boolean":true}"#)]);
+
+    let error = client(&server, 0).sparql_query(QUERY).await.unwrap_err();
+
+    assert!(matches!(error, Error::UnexpectedShape));
+}
+
+#[tokio::test]
 async fn retries_a_throttled_request_after_retry_after() {
     let server = MockServer::start(vec![
         Reply::text(429, "slow down").header("Retry-After", "0"),

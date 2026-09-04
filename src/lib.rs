@@ -160,10 +160,19 @@ fn value_to_json(value: &SparqlValue) -> serde_json::Value {
 /// Full SPARQL JSON results — handles SELECT (`results.bindings`) and ASK (`boolean`).
 #[derive(Debug, Default, Deserialize)]
 struct SparqlResponse {
-    #[serde(default)]
-    results: SparqlResults,
+    /// Present only for SELECT queries.
+    results: Option<SparqlResults>,
     /// Present only for ASK queries.
     boolean: Option<bool>,
+}
+
+impl SparqlResponse {
+    /// The SELECT rows; an answer without `results` has the wrong shape.
+    fn bindings(self) -> Result<Vec<SparqlBinding>, Error> {
+        self.results
+            .map(|results| results.bindings)
+            .ok_or(Error::UnexpectedShape)
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -235,7 +244,7 @@ impl SparqlClient {
 
     /// Execute a SELECT-style SPARQL query and return the result bindings.
     pub async fn sparql_query(&self, query: &str) -> Result<Vec<SparqlBinding>, Error> {
-        Ok(self.run(query).await?.results.bindings)
+        self.run(query).await?.bindings()
     }
 
     /// Execute a SELECT-style query and deserialize each row into `T`.
@@ -515,8 +524,8 @@ pub enum Error {
     /// A result row could not be deserialized into the requested type (see
     /// [`SparqlClient::query_into`]).
     Deserialize(serde_json::Error),
-    /// The response was valid JSON but not the expected shape (e.g. an ASK
-    /// query returned no `boolean`).
+    /// The response was valid JSON but not the expected shape (a SELECT
+    /// answer without `results`, an ASK answer without `boolean`).
     UnexpectedShape,
 }
 
@@ -656,6 +665,16 @@ mod tests {
                 label: None, // unbound optional variable
             }
         );
+    }
+
+    #[test]
+    fn test_select_rows_require_results() {
+        let ask: SparqlResponse = serde_json::from_str(r#"{"head":{},"boolean":true}"#).unwrap();
+        assert!(matches!(ask.bindings(), Err(Error::UnexpectedShape)));
+
+        let select: SparqlResponse =
+            serde_json::from_str(r#"{"head":{"vars":["s"]},"results":{"bindings":[]}}"#).unwrap();
+        assert!(select.bindings().unwrap().is_empty());
     }
 
     #[test]
